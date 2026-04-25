@@ -19,7 +19,7 @@ MCP server that wraps the upstream [mcp-atlassian](https://github.com/sooperset/
 3. All MCP tool calls use those cookies via a custom `requests.Session` subclass
 4. If an API response looks like an SSO redirect, the session reloads Firefox cookies and retries once
 
-The server monkey-patches `JiraClient` and `ConfluenceClient` constructors in `mcp-atlassian` to inject the browser-backed session, giving full parity with the upstream tool surface (72 tools + 1 `atlassian_login` helper = 73 total).
+The server monkey-patches `JiraClient` and `ConfluenceClient` constructors in `mcp-atlassian` to inject the browser-backed session, giving full parity with the upstream tool surface (73 Atlassian tools + 1 `atlassian_login` helper = 74 total).
 
 ## Files
 
@@ -44,6 +44,108 @@ Or configure as an MCP server in your editor (Cursor, Claude Code, etc.) pointin
 
 This server exposes Atlassian actions as MCP tools, not MCP resources. If your client reports `resources/list failed` or `resources/templates/list failed`, call the Jira/Confluence tools directly instead of resource discovery.
 
+### Tool Reference
+
+Tool names below are the exposed MCP names in Codex. The wrapper prefixes Jira tools with `jira_` and Confluence tools with `confluence_`.
+
+<details>
+<summary>Jira tools</summary>
+
+| Tool | Used for |
+|------|----------|
+| `jira_get_user_profile` | Retrieve profile information for a specific Jira user. |
+| `jira_get_issue_watchers` | Get the list of watchers for a Jira issue. |
+| `jira_add_watcher` | Add a user as a watcher to a Jira issue. |
+| `jira_remove_watcher` | Remove a user from watching a Jira issue. |
+| `jira_get_issue` | Get details of a specific Jira issue including its Epic links and relationship information. |
+| `jira_search` | Search Jira issues using JQL (Jira Query Language). |
+| `jira_search_fields` | Search Jira fields by keyword with fuzzy match. |
+| `jira_get_field_options` | Get allowed option values for a custom field. |
+| `jira_get_project_issues` | Get all issues for a specific Jira project. |
+| `jira_get_transitions` | Get available status transitions for a Jira issue. |
+| `jira_get_worklog` | Get worklog entries for a Jira issue. |
+| `jira_download_attachments` | Download attachments from a Jira issue. |
+| `jira_get_issue_images` | Get all images attached to a Jira issue as inline image content. |
+| `jira_get_agile_boards` | Get Jira agile boards by name, project key, or type. |
+| `jira_get_board_issues` | Get all issues linked to a specific board filtered by JQL. |
+| `jira_get_sprints_from_board` | Get Jira sprints from board by state. |
+| `jira_get_sprint_issues` | Get Jira issues from sprint. |
+| `jira_get_link_types` | Get all available issue link types. |
+| `jira_create_issue` | Create a new Jira issue with optional Epic link or parent for subtasks. |
+| `jira_batch_create_issues` | Create multiple Jira issues in a batch. |
+| `jira_batch_get_changelogs` | Get changelogs for multiple Jira issues (Cloud only). |
+| `jira_update_issue` | Update an existing Jira issue including changing status, adding Epic links, updating fields, etc. |
+| `jira_delete_issue` | Delete an existing Jira issue. |
+| `jira_add_comment` | Add a comment to a Jira issue. |
+| `jira_edit_comment` | Edit an existing comment on a Jira issue. |
+| `jira_add_worklog` | Add a worklog entry to a Jira issue. |
+| `jira_link_to_epic` | Link an existing issue to an epic. |
+| `jira_create_issue_link` | Create a link between two Jira issues. |
+| `jira_create_remote_issue_link` | Create a remote issue link (web link or Confluence link) for a Jira issue. |
+| `jira_remove_issue_link` | Remove a link between two Jira issues. |
+| `jira_transition_issue` | Transition a Jira issue to a new status. |
+| `jira_create_sprint` | Create Jira sprint for a board. |
+| `jira_update_sprint` | Update Jira sprint. |
+| `jira_add_issues_to_sprint` | Add issues to a Jira sprint. |
+| `jira_get_project_versions` | Get all fix versions for a specific Jira project. |
+| `jira_get_project_components` | Get all components for a specific Jira project. |
+| `jira_get_all_projects` | Get all Jira projects accessible to the current user. |
+| `jira_get_service_desk_for_project` | Get the Jira Service Desk associated with a project key. |
+| `jira_get_service_desk_queues` | Get queues for a Jira Service Desk. |
+| `jira_get_queue_issues` | Get issues from a Jira Service Desk queue. |
+| `jira_create_version` | Create a new fix version in a Jira project. |
+| `jira_batch_create_versions` | Batch create multiple versions in a Jira project. |
+| `jira_get_issue_proforma_forms` | Get all ProForma forms associated with a Jira issue. |
+| `jira_get_proforma_form_details` | Get detailed information about a specific ProForma form. |
+| `jira_update_proforma_form_answers` | Update form field answers using the Jira Forms REST API. |
+| `jira_get_issue_dates` | Get date information and status transition history for a Jira issue. |
+| `jira_get_issue_sla` | Calculate SLA metrics for a Jira issue. |
+| `jira_get_issue_development_info` | Get development information (PRs, commits, branches) linked to a Jira issue. |
+| `jira_get_issues_development_info` | Get development information for multiple Jira issues. |
+
+</details>
+
+<details>
+<summary>Confluence tools</summary>
+
+| Tool | Used for |
+|------|----------|
+| `confluence_search` | Search Confluence content using simple terms or CQL. |
+| `confluence_get_page` | Get content of a specific Confluence page by its ID, or by its title and space key. |
+| `confluence_get_page_children` | Get child pages and folders of a specific Confluence page. |
+| `confluence_get_space_page_tree` | Get page hierarchy for a Confluence space as a flat list. |
+| `confluence_get_comments` | Get comments for a specific Confluence page. |
+| `confluence_get_labels` | Get labels for Confluence content (pages, blog posts, or attachments). |
+| `confluence_add_label` | Add label to Confluence content (pages, blog posts, or attachments). |
+| `confluence_create_page` | Create a new Confluence page. |
+| `confluence_update_page` | Update an existing Confluence page. |
+| `confluence_delete_page` | Delete an existing Confluence page. |
+| `confluence_move_page` | Move a Confluence page to a new parent or space. |
+| `confluence_add_comment` | Add a comment to a Confluence page. |
+| `confluence_reply_to_comment` | Reply to an existing comment thread on a Confluence page. |
+| `confluence_search_user` | Search Confluence users using CQL (Cloud) or group member API (Server/DC). |
+| `confluence_get_page_history` | Get a historical version of a specific Confluence page. |
+| `confluence_get_page_diff` | Get a unified diff between two versions of a Confluence page. |
+| `confluence_get_page_views` | Get view statistics for a Confluence page. |
+| `confluence_upload_attachment` | Upload an attachment to Confluence content (page or blog post). |
+| `confluence_upload_attachments` | Upload multiple attachments to Confluence content in a single operation. |
+| `confluence_get_attachments` | List all attachments for a Confluence content item (page or blog post). |
+| `confluence_download_attachment` | Download an attachment from Confluence as an embedded resource. |
+| `confluence_download_content_attachments` | Download all attachments for a Confluence content item as embedded resources. |
+| `confluence_delete_attachment` | Permanently delete an attachment from Confluence. |
+| `confluence_get_page_images` | Get all images attached to a Confluence page as inline image content. |
+
+</details>
+
+<details>
+<summary>Helper</summary>
+
+| Tool | Used for |
+|------|----------|
+| `atlassian_login` | Refresh browser-backed Atlassian authentication. |
+
+</details>
+
 ### Minimize Codex token usage
 
 If you use this server from Codex, reduce token usage by redacting the MCP tool list in Codex itself. Codex supports per-server tool allowlists and denylists in `~/.codex/config.toml` via `enabled_tools` and `disabled_tools`; see the official [Codex MCP docs](https://developers.openai.com/codex/mcp) and [config reference](https://developers.openai.com/codex/config-reference).
@@ -61,6 +163,8 @@ tool_timeout_sec = 120
 enabled_tools = [
   "jira_search",
   "jira_get_issue",
+  "jira_download_attachments", 
+  "jira_get_issue_images"
 ]
 
 [mcp_servers.atlassian_browser.env]
@@ -121,6 +225,7 @@ enabled_tools = [
   "jira_search",
   "jira_get_issue",
   "jira_download_attachments",
+  "jira_get_issue_images",
 ]
 
 [mcp_servers.atlassian_browser.env]

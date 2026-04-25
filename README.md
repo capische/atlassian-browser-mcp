@@ -44,6 +44,96 @@ Or configure as an MCP server in your editor (Cursor, Claude Code, etc.) pointin
 
 This server exposes Atlassian actions as MCP tools, not MCP resources. If your client reports `resources/list failed` or `resources/templates/list failed`, call the Jira/Confluence tools directly instead of resource discovery.
 
+### Minimize Codex token usage
+
+If you use this server from Codex, reduce token usage by redacting the MCP tool list in Codex itself. Codex supports per-server tool allowlists and denylists in `~/.codex/config.toml` via `enabled_tools` and `disabled_tools`; see the official [Codex MCP docs](https://developers.openai.com/codex/mcp) and [config reference](https://developers.openai.com/codex/config-reference).
+
+For the lowest token usage, prefer `enabled_tools`. That prevents all non-listed tool schemas from being exposed to Codex for this MCP server.
+
+Example: keep only basic Jira lookup tools available in Codex:
+
+```toml
+[mcp_servers.atlassian_browser]
+command = "/Users/you/Projects/atlassian-browser-mcp/run-atlassian-browser-mcp.sh"
+cwd = "/Users/you/Projects/atlassian-browser-mcp"
+startup_timeout_sec = 30
+tool_timeout_sec = 120
+enabled_tools = [
+  "jira_search",
+  "jira_get_issue",
+]
+
+[mcp_servers.atlassian_browser.env]
+JIRA_URL = "https://jira.example.com"
+CONFLUENCE_URL = "https://confluence.example.com"
+```
+
+If you want to block only a few tools and keep the rest, use `disabled_tools` instead:
+
+```toml
+[mcp_servers.atlassian_browser]
+command = "/Users/you/Projects/atlassian-browser-mcp/run-atlassian-browser-mcp.sh"
+cwd = "/Users/you/Projects/atlassian-browser-mcp"
+disabled_tools = [
+  "confluence_search",
+  "confluence_get_page",
+]
+```
+
+Notes:
+
+- `enabled_tools` is better than `disabled_tools` when your goal is token reduction.
+- Redaction is client-side in Codex. Other MCP clients still see the full tool surface unless they apply their own filtering.
+- Restart Codex after changing `~/.codex/config.toml`.
+- Add `atlassian_login` to `enabled_tools` only if you need the manual login helper exposed.
+
+### Use a Jira summarizer subagent in Codex
+
+For even lower main-session token usage, keep Atlassian MCP tools out of the main Codex session and expose them only to a focused Jira summarizer subagent. Codex custom agents can live in `~/.codex/agents/` for personal use or `.codex/agents/` for project-scoped use. Codex only spawns subagents when you explicitly ask it to.
+
+Use `gpt-5.4-mini` with `model_reasoning_effort = "medium"` by default. Jira summarization is mostly retrieval, filtering, and compression. Use `gpt-5.4` with `model_reasoning_effort = "high"` only when the Jira work is complex, spans multiple tickets, or needs careful risk synthesis. See the official [Codex subagents docs](https://developers.openai.com/codex/subagents), [Codex MCP docs](https://developers.openai.com/codex/mcp), [Codex config reference](https://developers.openai.com/codex/config-reference), and [model list](https://developers.openai.com/api/docs/models).
+
+Create `~/.codex/agents/jira-summarizer.toml`:
+
+```toml
+name = "jira_summarizer"
+description = "Reads Jira issues through atlassian-browser-mcp and returns compact summaries for the parent agent."
+model = "gpt-5.4-mini"
+model_reasoning_effort = "medium"
+sandbox_mode = "read-only"
+
+developer_instructions = """
+Use Jira tools only to gather issue context.
+Summarize for the parent agent, not for an end user.
+When reading a specific issue, include comments because they often contain decisions, clarifications, and current blockers.
+Check for attachments and download them when filenames, metadata, or the parent request suggest they may contain useful requirements, screenshots, logs, or reproduction details.
+Prefer compact output: status, assignee, priority, key dates, requirements, blockers, comments, attachment findings, and engineering implications.
+Do not make code changes.
+Do not fetch unrelated issues unless the parent agent asks for linked or related work.
+"""
+
+[mcp_servers.atlassian_browser]
+command = "/Users/you/Projects/atlassian-browser-mcp/run-atlassian-browser-mcp.sh"
+cwd = "/Users/you/Projects/atlassian-browser-mcp"
+startup_timeout_sec = 30
+tool_timeout_sec = 120
+enabled_tools = [
+  "jira_search",
+  "jira_get_issue",
+  "jira_download_attachments",
+]
+
+[mcp_servers.atlassian_browser.env]
+JIRA_URL = "https://jira.example.com"
+CONFLUENCE_URL = "https://confluence.example.com"
+```
+
+Then ask the main agent to delegate Jira reading:
+
+```text
+Use jira_summarizer to read BIZ-20528, include comments, attachments, status, assignee, and acceptance details if available, and return a compact summary with blockers and engineering implications.
+```
+
 Firefox profile discovery is automatic. If Firefox has multiple profiles and the wrong one is selected, point directly at the cookie database:
 
 ```bash

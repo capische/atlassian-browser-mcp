@@ -5,14 +5,18 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "atlassian-browser-mcp"
 version = "1.0.0"
-description = "Browser-backed MCP server wrapping upstream mcp-atlassian with Playwright SSO auth"
+description = "Browser-cookie-backed MCP server wrapping upstream mcp-atlassian"
 requires-python = ">=3.11"
 license = "GPL-3.0-only"
 dependencies = [
+    "browser-cookie3>=0.20.1",
     "mcp-atlassian~=0.21.1",
-    "playwright>=1.58.0",
     "requests>=2.33.1",
+    "socksio>=1.0.0",
 ]
+
+[project.optional-dependencies]
+playwright = ["playwright>=1.58.0"]
 
 [project.scripts]
 atlassian-browser-mcp = "atlassian_browser_mcp_full:main"

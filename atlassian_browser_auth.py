@@ -9,14 +9,15 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from http.cookiejar import Cookie
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from urllib.parse import urlparse
 
 import requests
-from playwright.sync_api import Error, TimeoutError, sync_playwright
 
 ServiceName = Literal["jira", "confluence"]
+CookiesProviderName = Literal["firefox", "playwright"]
 
 _LOGIN_LOCK = threading.Lock()
 _USERNAME_SELECTORS = [
@@ -47,6 +48,8 @@ class BrowserAuthConfig:
     jira_url: str
     confluence_url: str
     username: str | None
+    cookies_provider: CookiesProviderName
+    firefox_cookie_file: Path | None
     profile_dir: Path
     storage_state: Path
     channel: str
@@ -60,10 +63,13 @@ class BrowserAuthConfig:
         jira_url = os.environ["JIRA_URL"].rstrip("/")
         confluence_url = os.environ["CONFLUENCE_URL"].rstrip("/")
         base_dir = Path(__file__).resolve().parent
+        cookies_provider = _cookies_provider_from_env()
         return cls(
             jira_url=jira_url,
             confluence_url=confluence_url,
             username=os.environ.get("ATLASSIAN_USERNAME"),
+            cookies_provider=cookies_provider,
+            firefox_cookie_file=_optional_path_from_env("FIREFOX_COOKIE_FILE"),
             profile_dir=Path(
                 os.environ.get(
                     "ATLASSIAN_BROWSER_PROFILE_DIR",
@@ -88,11 +94,7 @@ class BrowserAuthConfig:
             ),
             user_agent=os.environ.get(
                 "ATLASSIAN_BROWSER_USER_AGENT",
-                (
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/136.0.0.0 Safari/537.36"
-                ),
+                _default_user_agent(cookies_provider),
             ),
         )
 
@@ -103,9 +105,40 @@ class BrowserAuthConfig:
         return self.jira_login_url if service == "jira" else self.confluence_login_url
 
 
+def _cookies_provider_from_env() -> CookiesProviderName:
+    value = os.environ.get("COOKIES_PROVIDER", "firefox").strip().lower()
+    if value not in {"firefox", "playwright"}:
+        raise RuntimeError(
+            "COOKIES_PROVIDER must be either 'firefox' or 'playwright'"
+        )
+    return cast(CookiesProviderName, value)
+
+
+def _optional_path_from_env(name: str) -> Path | None:
+    value = os.environ.get(name)
+    if not value:
+        return None
+    return Path(value).expanduser()
+
+
+def _default_user_agent(cookies_provider: CookiesProviderName) -> str:
+    if cookies_provider == "firefox":
+        return (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:143.0) "
+            "Gecko/20100101 Firefox/143.0"
+        )
+    return (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/136.0.0.0 Safari/537.36"
+    )
+
+
 def _wait_for_any_selector(
     page, selectors: list[str], timeout_ms: int = 1800
 ) -> str | None:
+    from playwright.sync_api import Error, TimeoutError
+
     try:
         page.locator(", ".join(selectors)).first.wait_for(
             state="visible",
@@ -126,6 +159,8 @@ def _wait_for_any_selector(
 
 
 def _best_effort_prefill(page, username: str | None) -> None:
+    from playwright.sync_api import Error
+
     if not username:
         return
     selector = _wait_for_any_selector(page, _USERNAME_SELECTORS)
@@ -146,12 +181,130 @@ def _best_effort_prefill(page, username: str | None) -> None:
         )
 
 
+class CookiesProvider:
+    name: CookiesProviderName
+
+    def refresh_session(
+        self,
+        session: requests.Session,
+        service: ServiceName,
+        base_url: str,
+        config: BrowserAuthConfig,
+    ) -> int:
+        raise NotImplementedError
+
+    def refresh_auth(
+        self,
+        service: ServiceName,
+        url: str | None,
+        config: BrowserAuthConfig,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def refresh_after_auth_redirect(
+        self,
+        session: requests.Session,
+        service: ServiceName,
+        base_url: str,
+        config: BrowserAuthConfig,
+    ) -> int:
+        self.refresh_auth(service, None, config)
+        return self.refresh_session(session, service, base_url, config)
+
+
+class FirefoxCookiesProvider(CookiesProvider):
+    name: CookiesProviderName = "firefox"
+
+    def refresh_session(
+        self,
+        session: requests.Session,
+        service: ServiceName,
+        base_url: str,
+        config: BrowserAuthConfig,
+    ) -> int:
+        cookies_loaded = _apply_firefox_cookies(session, config, base_url)
+        if cookies_loaded == 0:
+            print(
+                f"[atlassian-browser-auth] No matching Firefox cookies found for "
+                f"{base_url}; open it in Firefox, complete SSO, then retry",
+                file=sys.stderr,
+                flush=True,
+            )
+        return cookies_loaded
+
+    def refresh_auth(
+        self,
+        service: ServiceName,
+        url: str | None,
+        config: BrowserAuthConfig,
+    ) -> dict[str, Any]:
+        return refresh_existing_browser_cookies(service, config)
+
+    def refresh_after_auth_redirect(
+        self,
+        session: requests.Session,
+        service: ServiceName,
+        base_url: str,
+        config: BrowserAuthConfig,
+    ) -> int:
+        return self.refresh_session(session, service, base_url, config)
+
+
+class PlaywrightCookiesProvider(CookiesProvider):
+    name: CookiesProviderName = "playwright"
+
+    def refresh_session(
+        self,
+        session: requests.Session,
+        service: ServiceName,
+        base_url: str,
+        config: BrowserAuthConfig,
+    ) -> int:
+        if not config.storage_state.exists():
+            if not sys.stdin.isatty() and not os.environ.get("DISPLAY"):
+                return 0
+            self.refresh_auth(service, None, config)
+        if not config.storage_state.exists():
+            return 0
+        storage_state = _load_storage_state(config.storage_state)
+        _apply_storage_state_cookies(session, storage_state, base_url)
+        return len(session.cookies)
+
+    def refresh_auth(
+        self,
+        service: ServiceName,
+        url: str | None,
+        config: BrowserAuthConfig,
+    ) -> dict[str, Any]:
+        return _interactive_playwright_login(service, url, config)
+
+
+_COOKIES_PROVIDERS: dict[CookiesProviderName, CookiesProvider] = {
+    "firefox": FirefoxCookiesProvider(),
+    "playwright": PlaywrightCookiesProvider(),
+}
+
+
+def _cookies_provider_for(name: CookiesProviderName) -> CookiesProvider:
+    return _COOKIES_PROVIDERS[name]
+
+
 def interactive_login(
     service: ServiceName = "jira",
     url: str | None = None,
     config: BrowserAuthConfig | None = None,
 ) -> dict[str, Any]:
     cfg = config or BrowserAuthConfig.from_env()
+    return _cookies_provider_for(cfg.cookies_provider).refresh_auth(service, url, cfg)
+
+
+def _interactive_playwright_login(
+    service: ServiceName,
+    url: str | None,
+    cfg: BrowserAuthConfig,
+) -> dict[str, Any]:
+    from playwright.sync_api import sync_playwright
+
     cfg.profile_dir.mkdir(parents=True, exist_ok=True)
     cfg.storage_state.parent.mkdir(parents=True, exist_ok=True)
     target_url = url or cfg.login_target(service)
@@ -198,6 +351,7 @@ def interactive_login(
                     return {
                         "status": "ok",
                         "service": service,
+                        "cookies_provider": cfg.cookies_provider,
                         "final_url": current_url,
                         "storage_state": str(cfg.storage_state),
                     }
@@ -209,6 +363,31 @@ def interactive_login(
                 "Timed out waiting for Atlassian login to complete. "
                 f"Last page: {current_url}"
             )
+
+
+def refresh_existing_browser_cookies(
+    service: ServiceName = "jira",
+    config: BrowserAuthConfig | None = None,
+) -> dict[str, Any]:
+    cfg = config or BrowserAuthConfig.from_env()
+    base_url = cfg.service_base(service)
+    cookie_jar = _load_firefox_cookie_jar(cfg)
+    matching_cookies = [
+        cookie
+        for cookie in cookie_jar
+        if _cookiejar_cookie_matches_base_url(cookie, base_url)
+        and not cookie.is_expired()
+    ]
+    return {
+        "status": "ok" if matching_cookies else "no_cookies",
+        "service": service,
+        "cookies_provider": cfg.cookies_provider,
+        "cookies_loaded": len(matching_cookies),
+        "message": (
+            "Loaded cookies from Firefox. If authentication still fails, "
+            "open Jira or Confluence in Firefox, complete SSO, then retry."
+        ),
+    }
 
 
 def _load_storage_state(path: Path) -> dict[str, Any]:
@@ -223,6 +402,12 @@ def _load_storage_state(path: Path) -> dict[str, Any]:
 def _cookie_matches_base_url(cookie: dict[str, Any], base_url: str) -> bool:
     hostname = urlparse(base_url).hostname or ""
     domain = (cookie.get("domain") or "").lstrip(".")
+    return bool(domain) and (hostname == domain or hostname.endswith(f".{domain}"))
+
+
+def _cookiejar_cookie_matches_base_url(cookie: Cookie, base_url: str) -> bool:
+    hostname = urlparse(base_url).hostname or ""
+    domain = cookie.domain.lstrip(".")
     return bool(domain) and (hostname == domain or hostname.endswith(f".{domain}"))
 
 
@@ -252,6 +437,41 @@ def _apply_storage_state_cookies(
             else int(float(expires)),
             rest=rest,
         )
+
+
+def _load_firefox_cookie_jar(config: BrowserAuthConfig) -> Any:
+    try:
+        import browser_cookie3
+    except ImportError as exc:
+        raise RuntimeError(
+            "Firefox cookie auth requires browser-cookie3. "
+            "Install dependencies with ./run-atlassian-browser-mcp.sh."
+        ) from exc
+
+    # Do not use browser-cookie3's domain filter here; it can miss parent-domain
+    # cookies such as .example.com for jira.example.com. Filter before applying.
+    kwargs: dict[str, Any] = {}
+    if config.firefox_cookie_file is not None:
+        kwargs["cookie_file"] = str(config.firefox_cookie_file)
+    return browser_cookie3.firefox(**kwargs)
+
+
+def _apply_firefox_cookies(
+    session: requests.Session,
+    config: BrowserAuthConfig,
+    base_url: str,
+) -> int:
+    session.cookies.clear()
+    cookie_jar = _load_firefox_cookie_jar(config)
+    cookies_loaded = 0
+    for cookie in cookie_jar:
+        if cookie.is_expired():
+            continue
+        if not _cookiejar_cookie_matches_base_url(cookie, base_url):
+            continue
+        session.cookies.set_cookie(cookie)
+        cookies_loaded += 1
+    return cookies_loaded
 
 
 def _load_sso_markers() -> tuple[str, ...]:
@@ -288,8 +508,27 @@ def looks_like_sso_response(response: requests.Response) -> bool:
     return "text/html" in content_type and any(marker in body_sample for marker in markers)
 
 
+def _with_browser_request_headers(
+    method: str,
+    base_url: str,
+    headers: Any,
+) -> dict[str, str]:
+    merged_headers = dict(headers or {})
+    if method.upper() in {"GET", "HEAD", "OPTIONS"}:
+        return merged_headers
+
+    parsed = urlparse(base_url)
+    if not parsed.scheme or not parsed.netloc:
+        return merged_headers
+
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    merged_headers.setdefault("Origin", origin)
+    merged_headers.setdefault("Referer", f"{base_url.rstrip('/')}/")
+    return merged_headers
+
+
 class BrowserCookieSession(requests.Session):
-    """Requests session that refreshes itself through the Playwright browser profile."""
+    """Requests session backed by cookies from a local browser profile."""
 
     def __init__(
         self,
@@ -301,7 +540,10 @@ class BrowserCookieSession(requests.Session):
         self.service = service
         self.base_url = base_url.rstrip("/")
         self.browser_config = config or BrowserAuthConfig.from_env()
-        self.trust_env = False
+        self.cookies_provider = _cookies_provider_for(
+            self.browser_config.cookies_provider
+        )
+        self.trust_env = True
         self.headers.update({"User-Agent": self.browser_config.user_agent})
         try:
             self.refresh_cookies()
@@ -314,22 +556,29 @@ class BrowserCookieSession(requests.Session):
             )
 
     def refresh_cookies(self) -> None:
-        if not self.browser_config.storage_state.exists():
-            if not sys.stdin.isatty() and not os.environ.get("DISPLAY"):
-                return
-            interactive_login(self.service, config=self.browser_config)
-        if not self.browser_config.storage_state.exists():
-            return
-        storage_state = _load_storage_state(self.browser_config.storage_state)
-        _apply_storage_state_cookies(self, storage_state, self.base_url)
+        self.cookies_provider.refresh_session(
+            self,
+            self.service,
+            self.base_url,
+            self.browser_config,
+        )
 
     def request(self, method: str, url: str, *args: Any, **kwargs: Any) -> requests.Response:
         retry_on_auth = kwargs.pop("_retry_on_auth", True)
+        kwargs["headers"] = _with_browser_request_headers(
+            method,
+            self.base_url,
+            kwargs.get("headers"),
+        )
         response = super().request(method, url, *args, **kwargs)
         if retry_on_auth and looks_like_sso_response(response):
             response.close()
-            interactive_login(self.service, config=self.browser_config)
-            self.refresh_cookies()
+            self.cookies_provider.refresh_after_auth_redirect(
+                self,
+                self.service,
+                self.base_url,
+                self.browser_config,
+            )
             return self.request(
                 method,
                 url,

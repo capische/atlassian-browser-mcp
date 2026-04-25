@@ -4,4 +4,9 @@ __pycache__/
 .atlassian-browser-profile/
 .atlassian-browser-state.json
 .env
+.envrc
 *.egg-info/
+.junie/
+.output.txt
+.idea/
+.DS_Store

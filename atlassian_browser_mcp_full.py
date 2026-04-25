@@ -8,6 +8,7 @@ import logging
 import os
 from importlib.metadata import version as package_version
 from typing import Any, Literal
+from urllib.parse import urlparse, urlunparse
 
 import requests
 from atlassian import Confluence, Jira
@@ -24,6 +25,10 @@ os.environ.setdefault("TOOLSETS", "all")
 os.environ.setdefault("ATLASSIAN_BROWSER_AUTH_ENABLED", "true")
 os.environ.setdefault("JIRA_PERSONAL_TOKEN", "BROWSER_SESSION")
 os.environ.setdefault("CONFLUENCE_PERSONAL_TOKEN", "BROWSER_SESSION")
+os.environ.setdefault("JIRA_USERNAME", "BROWSER_SESSION")
+os.environ.setdefault("JIRA_API_TOKEN", "BROWSER_SESSION")
+os.environ.setdefault("CONFLUENCE_USERNAME", "BROWSER_SESSION")
+os.environ.setdefault("CONFLUENCE_API_TOKEN", "BROWSER_SESSION")
 
 from mcp_atlassian.confluence.client import ConfluenceClient
 from mcp_atlassian.confluence.config import ConfluenceConfig
@@ -43,6 +48,15 @@ _ORIGINAL_JIRA_INIT = JiraClient.__init__
 _ORIGINAL_CONFLUENCE_INIT = ConfluenceClient.__init__
 _ORIGINAL_LOOKUP_USER_BY_PERMISSIONS = UsersMixin._lookup_user_by_permissions
 _ORIGINAL_FORMS_API_REQUEST = FormsApiMixin._make_forms_api_request
+
+
+def _normalize_jira_url(url: str) -> str:
+    parsed = urlparse(url)
+    if (parsed.hostname or "").endswith(".atlassian.net") and parsed.path.rstrip(
+        "/"
+    ) == "/jira":
+        return urlunparse(parsed._replace(path="", params="", query="", fragment=""))
+    return url
 
 
 def assert_upstream_compatibility() -> None:
@@ -118,6 +132,7 @@ def _patch_jira_client_init(self: JiraClient, config: Any | None = None) -> None
         return
 
     self.config = config or JiraConfig.from_env()
+    self.config.url = _normalize_jira_url(self.config.url)
     session = create_browser_session("jira", self.config.url)
     self.jira = Jira(
         url=self.config.url,
@@ -126,7 +141,7 @@ def _patch_jira_client_init(self: JiraClient, config: Any | None = None) -> None
         verify_ssl=self.config.ssl_verify,
         timeout=self.config.timeout,
     )
-    self.jira._session.trust_env = False
+    self.jira._session.trust_env = True
     _apply_network_config(self.jira._session, self.config, "Jira")
     if self.config.custom_headers:
         self._apply_custom_headers()
@@ -158,7 +173,7 @@ def _patch_confluence_client_init(
         verify_ssl=self.config.ssl_verify,
         timeout=self.config.timeout,
     )
-    self.confluence._session.trust_env = False
+    self.confluence._session.trust_env = True
     _apply_network_config(self.confluence._session, self.config, "Confluence")
     if self.config.custom_headers:
         self._apply_custom_headers()
@@ -252,7 +267,7 @@ def atlassian_login(
     target: Literal["jira", "confluence"] = "jira",
     url: str | None = None,
 ) -> dict[str, Any]:
-    """Launch a visible browser and wait for manual SSO / MFA login."""
+    """Refresh browser-backed Atlassian authentication."""
 
     return interactive_login(target, url)
 

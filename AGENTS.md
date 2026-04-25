@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-MCP server wrapping upstream [mcp-atlassian](https://github.com/sooperset/mcp-atlassian) with browser-cookie authentication via Playwright. Designed for Atlassian Server/Data Center instances behind corporate SSO where API tokens are not available.
+MCP server wrapping upstream [mcp-atlassian](https://github.com/sooperset/mcp-atlassian) with browser-cookie authentication (Firefox or Playwright). Designed for Atlassian Server/Data Center instances behind corporate SSO where API tokens are not available. By default, it reuses existing sessions from Firefox via `browser-cookie3`.
 
 ## Architecture
 
